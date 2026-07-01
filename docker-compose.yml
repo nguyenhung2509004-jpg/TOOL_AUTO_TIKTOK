@@ -1,0 +1,29 @@
+services:
+  backend:
+    build:
+      context: ./backend
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./storage:/storage
+      - ./backend/app:/app/app
+      - ${DOUYIN_LOCAL_DOWNLOAD_DIR:-./storage/inbox}:/downloads
+    environment:
+      STORAGE_DIR: /storage
+      WATCH_DIR: /storage/inbox
+      DOUYIN_LOCAL_DOWNLOAD_DIR: /downloads
+
+  frontend:
+    image: node:22-alpine
+    working_dir: /app
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+    environment:
+      VITE_API_BASE: http://localhost:8000
+    depends_on:
+      - backend
