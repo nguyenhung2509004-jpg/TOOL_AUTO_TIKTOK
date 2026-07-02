@@ -910,22 +910,24 @@ textarea:focus,
 
 .exportStats {
   display: grid;
-  gap: 14px;
-  grid-template-columns: repeat(3, minmax(160px, 1fr));
-  margin-bottom: 18px;
+  gap: 10px;
+  grid-template-columns: repeat(4, minmax(130px, 1fr));
+  margin-bottom: 16px;
 }
 
 .exportStats div {
   background: #f8faf7;
   border: 1px solid var(--line);
   display: grid;
-  gap: 4px;
-  padding: 14px;
+  gap: 3px;
+  min-height: 72px;
+  padding: 12px 14px;
 }
 
 .exportStats strong {
   color: var(--green-strong);
-  font-size: 20px;
+  font-size: 18px;
+  line-height: 1.1;
 }
 
 .exportStats span {
@@ -935,22 +937,22 @@ textarea:focus,
 
 .sectionTitle {
   font-size: 15px;
-  margin: 18px 0 14px;
+  margin: 12px 0;
 }
 
 .renderQueue {
   display: grid;
-  gap: 18px;
-  grid-template-columns: repeat(2, minmax(240px, 1fr));
-  margin-bottom: 30px;
+  gap: 12px;
+  grid-template-columns: minmax(280px, 760px);
+  margin-bottom: 24px;
 }
 
 .queueCard {
   align-items: start;
   display: grid;
-  gap: 14px;
+  gap: 12px;
   grid-template-columns: 42px 1fr;
-  padding: 18px;
+  padding: 14px;
 }
 
 .queueIcon {
@@ -977,7 +979,7 @@ textarea:focus,
 }
 
 .queueCard .progress {
-  margin: 14px 0 8px;
+  margin: 12px 0 8px;
 }
 
 .queueFoot button {
@@ -994,10 +996,10 @@ textarea:focus,
   align-items: center;
   border-top: 1px solid #dfe7df;
   display: grid;
-  gap: 14px;
-  grid-template-columns: minmax(220px, 1.6fr) 180px 120px minmax(220px, 0.7fr);
-  min-height: 64px;
-  padding: 0 18px;
+  gap: 12px;
+  grid-template-columns: minmax(220px, 1.5fr) 130px 118px minmax(270px, 0.9fr);
+  min-height: 56px;
+  padding: 0 14px;
 }
 
 .historyRow:first-child {
@@ -1009,7 +1011,7 @@ textarea:focus,
   color: #59665d;
   font-size: 11px;
   font-weight: 900;
-  min-height: 54px;
+  min-height: 46px;
   text-transform: uppercase;
 }
 
@@ -1017,10 +1019,29 @@ textarea:focus,
   font-size: 13px;
 }
 
+.historyName {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.historyName strong {
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.historyName small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
 .tableActions {
   display: flex;
-  gap: 10px;
+  gap: 6px;
   flex-wrap: wrap;
+  justify-content: flex-start;
 }
 
 .tableActions button {
@@ -1030,16 +1051,26 @@ textarea:focus,
   display: grid;
   font-size: 11px;
   font-weight: 700;
-  min-height: 28px;
-  padding: 0 8px;
+  min-height: 26px;
+  min-width: 64px;
+  padding: 0 7px;
   place-items: center;
+}
+
+.tableActions .dangerAction {
+  border-color: #e7b2a7;
+  color: var(--danger);
+}
+
+.tableActions .dangerAction:hover {
+  background: #fff4ef;
 }
 
 .jobStrip {
   display: grid;
   gap: 10px;
-  margin-top: 18px;
-  padding: 14px;
+  margin-top: 12px;
+  padding: 12px 14px;
 }
 
 .jobStrip a {
@@ -1051,7 +1082,7 @@ textarea:focus,
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
-  margin-top: 20px;
+  margin-top: 16px;
 }
 
 .captionPreview {
@@ -1153,6 +1184,7 @@ textarea:focus-visible {
   }
 
   .renderQueue,
+  .exportStats,
   .previewPanel,
   .historyRow,
   .segmentRow {

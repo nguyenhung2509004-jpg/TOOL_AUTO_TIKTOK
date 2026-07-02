@@ -27,11 +27,20 @@ export type RenderJob = {
   progress_percentage: number;
   output_video_path: string | null;
   error_message: string | null;
+  created_at?: string;
+  completed_at?: string | null;
 };
 
 export type Caption = {
   caption: string;
   hashtags: string[];
+};
+
+export type TTSVoice = {
+  id: string;
+  label: string;
+  provider: string;
+  voice_id: string;
 };
 
 export type Niche = {
@@ -156,8 +165,17 @@ export const api = {
   rawVideoUrl(videoId: number) {
     return `${API_BASE}/api/videos/${videoId}/raw`;
   },
+  renderJobs(params?: { videoId?: number }) {
+    const search = new URLSearchParams();
+    if (params?.videoId) search.set("video_id", String(params.videoId));
+    const suffix = search.toString() ? `?${search}` : "";
+    return request<RenderJob[]>(`/api/render-jobs${suffix}`);
+  },
   renderJob(jobId: number) {
     return request<RenderJob>(`/api/render-jobs/${jobId}`);
+  },
+  cancelRenderJob(jobId: number) {
+    return request<{ job_id: number; deleted: boolean; message: string }>(`/api/render-jobs/${jobId}/cancel`, { method: "POST" });
   },
   renderDownloadUrl(jobId: number) {
     return `${API_BASE}/api/render-jobs/${jobId}/download`;
@@ -169,6 +187,9 @@ export const api = {
     return request<{ video_id: number; deleted_files: number; kept_files: number }>(`/api/videos/${videoId}/cleanup`, {
       method: "POST",
     });
+  },
+  ttsVoices() {
+    return request<TTSVoice[]>("/api/tts/voices");
   },
   niches() {
     return request<Niche[]>("/api/douyin/trends/niches");

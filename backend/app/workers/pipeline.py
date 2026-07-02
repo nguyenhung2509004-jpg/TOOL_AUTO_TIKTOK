@@ -1,5 +1,6 @@
 from datetime import datetime
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from uuid import uuid4
 
 from sqlalchemy.orm import Session
@@ -8,11 +9,15 @@ from app.core.config import get_settings
 from app.core.database import SessionLocal
 from app.models.video import RenderJob, SourceVideo, VideoSegment
 from app.schemas.video import RenderRequest
-from app.services.asr import ASRService
+from app.services.asr import ASRService, TranscriptSegment
 from app.services.downloader import DouyinDownloader
 from app.services.media import build_srt, extract_audio, ffprobe_duration, render_video
 from app.services.translator import TranslationService
 from app.services.tts import TTSService
+
+
+class RenderCanceled(RuntimeError):
+    pass
 
 
 def new_task_id(prefix: str) -> str:
@@ -58,7 +63,7 @@ async def import_video_job(video_id: int) -> None:
         db.query(VideoSegment).filter(VideoSegment.video_id == video.id).delete()
         db.commit()
 
-        transcript = ASRService().transcribe(Path(video.original_audio_path) if video.original_audio_path else None)
+        transcript = _transcribe_or_fallback(video, Path(video.original_audio_path) if video.original_audio_path else None)
         if not transcript:
             raise RuntimeError("ASR returned no transcript segments.")
         for order, item in enumerate(transcript, start=1):
@@ -117,7 +122,7 @@ def import_local_video_job(video_id: int) -> None:
         video.status = "transcribing"
         db.commit()
 
-        transcript = ASRService().transcribe(audio_path)
+        transcript = _transcribe_or_fallback(video, audio_path)
         if not transcript:
             raise RuntimeError("ASR returned no transcript segments.")
 
@@ -155,10 +160,12 @@ def render_job(job_id: int, request: RenderRequest) -> None:
         job = db.get(RenderJob, job_id)
         if not job:
             return
+        _raise_if_render_canceled(db, job_id)
         video = db.get(SourceVideo, job.video_id)
         job.status = "rendering"
         job.progress_percentage = 10
         db.commit()
+        _raise_if_render_canceled(db, job_id)
 
         if not video or not video.raw_video_path or not Path(video.raw_video_path).exists():
             raise RuntimeError("No raw video found. Import a real downloadable video before rendering.")
@@ -166,19 +173,57 @@ def render_job(job_id: int, request: RenderRequest) -> None:
         segments = _segments(db, job.video_id)
         if not segments:
             raise RuntimeError("No real transcript segments found. Run ASR/import successfully before rendering.")
-        tts = TTSService(settings.storage_dir)
         voice_paths: list[tuple[Path, float]] = []
-        for segment in segments:
-            text = segment.text_vi_optimized or segment.text_vi or segment.text_cn
-            target = segment.end_time - segment.start_time
-            voice_path, voice_duration, speed_ratio = tts.synthesize(segment.id, text, target)
-            segment.voice_segment_path = str(voice_path) if voice_path else None
-            segment.voice_duration = voice_duration
-            segment.speed_ratio = speed_ratio
-            if voice_path:
-                voice_paths.append((voice_path, segment.start_time))
-        if not voice_paths:
-            raise RuntimeError("No real TTS voice files were generated.")
+        tts_errors: list[str] = []
+        total_segments = max(len(segments), 1)
+        workers = min(max(settings.tts_parallel_workers, 1), total_segments)
+        executor = ThreadPoolExecutor(max_workers=workers)
+        render_canceled = False
+        try:
+            future_map = {
+                executor.submit(
+                    _synthesize_segment_voice,
+                    settings.storage_dir,
+                    request.tts_provider,
+                    request.voice_id,
+                    segment.id,
+                    segment.text_vi_optimized or segment.text_vi or segment.text_cn,
+                    segment.end_time - segment.start_time,
+                ): segment.id
+                for segment in segments
+            }
+            for index, future in enumerate(as_completed(future_map), start=1):
+                _raise_if_render_canceled(db, job_id)
+                segment_id = future_map[future]
+                segment = db.get(VideoSegment, segment_id)
+                if not segment:
+                    continue
+                try:
+                    voice_path, voice_duration, speed_ratio = future.result()
+                except Exception as exc:
+                    tts_errors.append(f"segment {segment_id}: {exc}")
+                    segment.voice_segment_path = None
+                    segment.voice_duration = None
+                    segment.speed_ratio = 1.0
+                    job.error_message = (
+                        f"TTS skipped {len(tts_errors)} segment(s); rendering will continue. "
+                        f"First error: {tts_errors[0][:500]}"
+                    )
+                else:
+                    segment.voice_segment_path = str(voice_path) if voice_path else None
+                    segment.voice_duration = voice_duration
+                    segment.speed_ratio = speed_ratio
+                    if voice_path:
+                        voice_paths.append((voice_path, segment.start_time))
+                job.progress_percentage = min(44, 10 + int(index / total_segments * 34))
+                db.commit()
+        except RenderCanceled:
+            render_canceled = True
+            raise
+        finally:
+            executor.shutdown(wait=not render_canceled, cancel_futures=True)
+        _raise_if_render_canceled(db, job_id)
+        voice_paths.sort(key=lambda item: item[1])
         job.progress_percentage = 45
         db.commit()
 
@@ -186,6 +231,7 @@ def render_job(job_id: int, request: RenderRequest) -> None:
         job.subtitle_path = str(subtitle_path)
         job.progress_percentage = 60
         db.commit()
+        _raise_if_render_canceled(db, job_id)
 
         output_path = settings.storage_dir / "renders" / f"{video.id}_{job.id}.mp4"
         render_video(
@@ -194,14 +240,24 @@ def render_job(job_id: int, request: RenderRequest) -> None:
             subtitle_path,
             output_path,
             request.original_audio_volume,
+            request.voice_volume,
             request.burn_subtitles,
         )
+        _raise_if_render_canceled(db, job_id)
         job.output_video_path = str(output_path)
 
         job.status = "completed"
         job.progress_percentage = 100
+        if tts_errors:
+            job.error_message = (
+                f"Completed with {len(tts_errors)} TTS skipped segment(s). "
+                "Output uses available voice audio plus original audio/subtitles. "
+                f"First error: {tts_errors[0][:500]}"
+            )
         job.completed_at = datetime.utcnow()
         db.commit()
+    except RenderCanceled:
+        pass
     except Exception as exc:
         job = db.get(RenderJob, job_id)
         if job:
@@ -220,6 +276,49 @@ def _segments(db: Session, video_id: int) -> list[VideoSegment]:
         .order_by(VideoSegment.display_order.asc())
         .all()
     )
+
+
+def _synthesize_segment_voice(
+    storage_dir: Path,
+    tts_provider: str,
+    voice_id: str,
+    segment_id: int,
+    text: str,
+    target_duration: float,
+) -> tuple[Path | None, float, float]:
+    tts = TTSService(storage_dir, tts_provider, voice_id)
+    return tts.synthesize(segment_id, text, target_duration)
+
+
+def _raise_if_render_canceled(db: Session, job_id: int) -> None:
+    job = db.get(RenderJob, job_id)
+    if not job:
+        raise RenderCanceled()
+    db.refresh(job)
+    if job.status in {"cancel_requested", "canceled"}:
+        job.status = "canceled"
+        job.error_message = "Render canceled by user."
+        job.completed_at = datetime.utcnow()
+        db.commit()
+        raise RenderCanceled()
+
+
+def _transcribe_or_fallback(video: SourceVideo, audio_path: Path | None) -> list[TranscriptSegment]:
+    try:
+        return ASRService().transcribe(audio_path)
+    except Exception as exc:
+        message = str(exc).lower()
+        no_speech = "no transcript" in message or "no usable transcript" in message or "no transcript text" in message
+        if not no_speech:
+            raise
+        end_time = min(max(float(video.duration or 8), 2), 30)
+        return [
+            TranscriptSegment(
+                start_time=0,
+                end_time=end_time,
+                text_cn="无清晰对白",
+            )
+        ]
 
 
 def _fail_video(db: Session, video_id: int, exc: Exception) -> None:

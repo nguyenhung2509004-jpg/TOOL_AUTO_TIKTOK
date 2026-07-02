@@ -1,18 +1,16 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { api, DouyinTrend, Niche, RenderJob, Segment, SourceVideo } from "./lib/api";
+import { api, DouyinTrend, Niche, RenderJob, Segment, SourceVideo, TTSVoice } from "./lib/api";
 import "./styles.css";
 
 type AppTab = "dashboard" | "studio" | "export";
-type ExportFilter = "all" | "completed" | "failed";
-type VoiceProfile = "fpt_banmai" | "fpt_male" | "eleven_warm" | "local_default";
+type ExportFilter = "all" | "rendering" | "completed" | "failed" | "canceled";
+const TERMINAL_RENDER_STATUSES = new Set(["completed", "failed", "canceled", "cancel_requested"]);
 
-const VOICE_PROFILES: Record<VoiceProfile, { label: string; provider: string; voiceId: string }> = {
-  fpt_banmai: { label: "Female - Ban Mai", provider: "fpt_ai", voiceId: "banmai" },
-  fpt_male: { label: "Male - Warm Narrator", provider: "fpt_ai", voiceId: "leminh" },
-  eleven_warm: { label: "ElevenLabs - Warm", provider: "elevenlabs", voiceId: "default" },
-  local_default: { label: "Local default", provider: "local", voiceId: "vi_default" },
-};
+const DEFAULT_TTS_VOICES: TTSVoice[] = [
+  { id: "fpt_banmai", label: "FPT - Ban Mai", provider: "fpt_ai", voice_id: "banmai" },
+  { id: "fpt_leminh", label: "FPT - Le Minh", provider: "fpt_ai", voice_id: "leminh" },
+];
 
 function App() {
   const [tab, setTab] = useState<AppTab>("dashboard");
@@ -21,10 +19,12 @@ function App() {
   const [activeVideo, setActiveVideo] = useState<SourceVideo | null>(null);
   const [segments, setSegments] = useState<Segment[]>([]);
   const [job, setJob] = useState<RenderJob | null>(null);
+  const [jobs, setJobs] = useState<RenderJob[]>([]);
   const [caption, setCaption] = useState("");
   const [volume, setVolume] = useState(0.15);
   const [voiceVolume, setVoiceVolume] = useState(1);
-  const [voiceProfile, setVoiceProfile] = useState<VoiceProfile>("fpt_banmai");
+  const [ttsVoices, setTtsVoices] = useState<TTSVoice[]>(DEFAULT_TTS_VOICES);
+  const [selectedVoiceId, setSelectedVoiceId] = useState(DEFAULT_TTS_VOICES[0].id);
   const [speechSpeed, setSpeechSpeed] = useState(1);
   const [pitch, setPitch] = useState(0);
   const [burnSubtitles, setBurnSubtitles] = useState(true);
@@ -51,6 +51,17 @@ function App() {
     const nextActive = nextVideos.find((item) => item.id === (selectId ?? activeVideo?.id)) ?? nextVideos[0] ?? null;
     setActiveVideo(nextActive);
     return nextActive;
+  }
+
+  async function refreshJobs() {
+    const nextJobs = await api.renderJobs();
+    setJobs(nextJobs);
+    setJob((current) => {
+      if (!nextJobs.length) return null;
+      if (!current) return nextJobs[0];
+      return nextJobs.find((item) => item.id === current.id) ?? nextJobs[0];
+    });
+    return nextJobs;
   }
 
   async function importVideo(event?: React.FormEvent) {
@@ -178,13 +189,14 @@ function App() {
     setBusy(true);
     setError(null);
     try {
-      const voice = VOICE_PROFILES[voiceProfile];
+      const voice = ttsVoices.find((item) => item.id === selectedVoiceId) ?? ttsVoices[0] ?? DEFAULT_TTS_VOICES[0];
       const nextJob = await api.render(activeVideo.id, volume, burnSubtitles, {
         ttsProvider: voice.provider,
-        voiceId: voice.voiceId,
+        voiceId: voice.voice_id,
         voiceVolume,
       });
       setJob(nextJob);
+      setJobs((items) => [nextJob, ...items.filter((item) => item.id !== nextJob.id)]);
       setTab("export");
       showNotice(`Render queued with ${voice.label}.`);
     } catch (err) {
@@ -206,6 +218,18 @@ function App() {
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Caption failed");
+    }
+  }
+
+  async function cancelRender(jobId: number) {
+    setError(null);
+    try {
+      const response = await api.cancelRenderJob(jobId);
+      setJob((current) => (current?.id === response.job_id ? null : current));
+      setJobs((items) => items.filter((item) => item.id !== response.job_id));
+      showNotice(response.message);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Cancel render failed");
     }
   }
 
@@ -288,6 +312,14 @@ function App() {
 
   useEffect(() => {
     refreshVideos().catch((err) => setError(err instanceof Error ? err.message : "Cannot load videos"));
+    refreshJobs().catch((err) => setError(err instanceof Error ? err.message : "Cannot load render history"));
+    api.ttsVoices()
+      .then((items) => {
+        const nextVoices = items.length ? items : DEFAULT_TTS_VOICES;
+        setTtsVoices(nextVoices);
+        setSelectedVoiceId((current) => nextVoices.some((voice) => voice.id === current) ? current : nextVoices[0].id);
+      })
+      .catch(() => setTtsVoices(DEFAULT_TTS_VOICES));
     api.niches()
       .then((items) => {
         setNiches(items);
@@ -307,7 +339,7 @@ function App() {
     }
     api.segments(activeVideo.id).then(setSegments).catch(() => setSegments([]));
     api.caption(activeVideo.id).then((response) => setCaption(response.caption)).catch(() => setCaption(""));
-  }, [activeVideo?.id]);
+  }, [activeVideo?.id, activeVideo?.status]);
 
   useEffect(() => {
     if (!activeVideo || activeVideo.status === "ready" || activeVideo.status === "failed") return;
@@ -318,12 +350,12 @@ function App() {
   }, [activeVideo?.id, activeVideo?.status]);
 
   useEffect(() => {
-    if (!job || job.status === "completed" || job.status === "failed") return;
+    if (!jobs.some((item) => !TERMINAL_RENDER_STATUSES.has(item.status))) return;
     const timer = window.setInterval(() => {
-      api.renderJob(job.id).then(setJob).catch(() => undefined);
+      refreshJobs().catch(() => undefined);
     }, 1200);
     return () => window.clearInterval(timer);
-  }, [job?.id, job?.status]);
+  }, [jobs]);
 
   const warningCount = useMemo(() => segments.filter((segment) => segment.warning).length, [segments]);
   const visibleVideos = activeFolder === "All Projects"
@@ -389,8 +421,9 @@ function App() {
             setVolume={setVolume}
             voiceVolume={voiceVolume}
             setVoiceVolume={setVoiceVolume}
-            voiceProfile={voiceProfile}
-            setVoiceProfile={setVoiceProfile}
+            ttsVoices={ttsVoices}
+            selectedVoiceId={selectedVoiceId}
+            setSelectedVoiceId={setSelectedVoiceId}
             speechSpeed={speechSpeed}
             setSpeechSpeed={setSpeechSpeed}
             pitch={pitch}
@@ -406,6 +439,7 @@ function App() {
             videos={visibleVideos}
             activeVideo={activeVideo}
             job={job}
+            jobs={jobs}
             busy={busy}
             scanLocalInbox={scanLocalInbox}
             startRender={startRender}
@@ -416,6 +450,7 @@ function App() {
             setExportFilter={setExportFilter}
             storagePercent={storagePercent}
             showNotice={showNotice}
+            cancelRender={cancelRender}
           />
         )}
       </main>
@@ -739,8 +774,9 @@ function StudioView({
   setVolume,
   voiceVolume,
   setVoiceVolume,
-  voiceProfile,
-  setVoiceProfile,
+  ttsVoices,
+  selectedVoiceId,
+  setSelectedVoiceId,
   speechSpeed,
   setSpeechSpeed,
   pitch,
@@ -766,8 +802,9 @@ function StudioView({
   setVolume: (value: number) => void;
   voiceVolume: number;
   setVoiceVolume: (value: number) => void;
-  voiceProfile: VoiceProfile;
-  setVoiceProfile: (value: VoiceProfile) => void;
+  ttsVoices: TTSVoice[];
+  selectedVoiceId: string;
+  setSelectedVoiceId: (value: string) => void;
   speechSpeed: number;
   setSpeechSpeed: (value: number) => void;
   pitch: number;
@@ -828,7 +865,7 @@ function StudioView({
 
         {activeVideo?.error_message && (
           <div className="downloadIssue">
-            <strong>Raw video missing</strong>
+            <strong>{activeVideo.raw_video_path ? "Processing failed" : "Raw video missing"}</strong>
             <small>{activeVideo.error_message}</small>
             <button className="lineBtn" onClick={retryImport} disabled={busy} type="button">Retry import</button>
           </div>
@@ -879,8 +916,8 @@ function StudioView({
         </label>
         <label>
           Voice Profile
-          <select value={voiceProfile} onChange={(event) => setVoiceProfile(event.target.value as VoiceProfile)}>
-            {Object.entries(VOICE_PROFILES).map(([id, voice]) => <option value={id} key={id}>{voice.label}</option>)}
+          <select value={selectedVoiceId} onChange={(event) => setSelectedVoiceId(event.target.value)}>
+            {ttsVoices.map((voice) => <option value={voice.id} key={voice.id}>{voice.label}</option>)}
           </select>
         </label>
         <label className="rangeLine">
@@ -902,6 +939,7 @@ function ExportView({
   videos,
   activeVideo,
   job,
+  jobs,
   busy,
   scanLocalInbox,
   startRender,
@@ -912,10 +950,12 @@ function ExportView({
   setExportFilter,
   storagePercent,
   showNotice,
+  cancelRender,
 }: {
   videos: SourceVideo[];
   activeVideo: SourceVideo | null;
   job: RenderJob | null;
+  jobs: RenderJob[];
   busy: boolean;
   scanLocalInbox: () => Promise<void>;
   startRender: () => Promise<void>;
@@ -926,12 +966,18 @@ function ExportView({
   setExportFilter: (filter: ExportFilter) => void;
   storagePercent: number;
   showNotice: (message: string) => void;
+  cancelRender: (jobId: number) => Promise<void>;
 }) {
-  const renderRows = videos
-    .filter((video) => exportFilter === "all" || (exportFilter === "failed" ? video.status === "failed" : video.status !== "failed"))
-    .slice(0, 12);
-  const progress = job?.progress_percentage ?? 0;
-  const activeJobReady = Boolean(job && job.status === "completed" && (!activeVideo || job.video_id === activeVideo.id));
+  const latestJob = jobs[0] ?? job;
+  const activeRenderJob = jobs.find((item) => item.status === "queued" || item.status === "rendering") ?? null;
+  const renderRows = jobs
+    .filter((item) => exportFilter === "all" || item.status === exportFilter)
+    .slice(0, 12)
+    .map((item) => ({ job: item, video: videos.find((video) => video.id === item.video_id) ?? null }));
+  const progress = activeRenderJob?.progress_percentage ?? 0;
+  const queueVideo = activeRenderJob ? videos.find((video) => video.id === activeRenderJob.video_id) ?? activeVideo : null;
+  const completedCount = jobs.filter((item) => item.status === "completed").length;
+  const activeCount = jobs.filter((item) => !TERMINAL_RENDER_STATUSES.has(item.status)).length;
 
   async function shareCurrent() {
     if (!activeVideo) return;
@@ -954,8 +1000,10 @@ function ExportView({
         <div className="headerControls">
           <select value={exportFilter} onChange={(event) => setExportFilter(event.target.value as ExportFilter)}>
             <option value="all">All projects</option>
-            <option value="completed">Completed/Ready</option>
+            <option value="rendering">Rendering</option>
+            <option value="completed">Completed</option>
             <option value="failed">Failed</option>
+            <option value="canceled">Canceled</option>
           </select>
           <button className="lineBtn" onClick={scanLocalInbox} disabled={busy} type="button">Scan inbox</button>
         </div>
@@ -963,13 +1011,23 @@ function ExportView({
 
       <div className="exportStats">
         <div><strong>{videos.length}</strong><span>Library videos</span></div>
+        <div><strong>{completedCount}</strong><span>Completed renders</span></div>
+        <div><strong>{activeCount ? `${activeCount} active` : "idle"}</strong><span>Render queue</span></div>
         <div><strong>{storagePercent}%</strong><span>Storage used</span></div>
-        <div><strong>{job ? job.status : "idle"}</strong><span>Render status</span></div>
       </div>
 
-      <h2 className="sectionTitle">Hang doi Render</h2>
+      <div className="historyHeader compact">
+        <h2 className="sectionTitle">Hang doi Render</h2>
+        {activeRenderJob && <span>Job #{activeRenderJob.id}</span>}
+      </div>
       <div className="renderQueue">
-        <RenderQueueCard name={activeVideo ? `Video_${activeVideo.id}.mp4` : "No selected video"} progress={progress} eta={job ? `${job.status} - ${job.progress_percentage}%` : "No active render"} />
+        <RenderQueueCard
+          name={queueVideo ? `Video_${queueVideo.id}.mp4` : "No selected video"}
+          progress={progress}
+          eta={activeRenderJob ? `${activeRenderJob.status} - ${activeRenderJob.progress_percentage}%` : "No active render"}
+          job={activeRenderJob}
+          cancelRender={cancelRender}
+        />
       </div>
 
       <div className="historyHeader">
@@ -978,13 +1036,17 @@ function ExportView({
       </div>
       <div className="historyTable">
         <div className="historyRow head"><span>Ten video</span><span>Nguon</span><span>Trang thai</span><span>Thao tac</span></div>
-        {renderRows.map((video) => (
-          <div className="historyRow" key={video.id}>
-            <span>{video.caption_original || `Video_${video.id}.mp4`}</span>
-            <span>{video.source_url.startsWith("file://") ? "Local MP4" : "Douyin"}</span>
-            <span className={video.status === "failed" ? "badStatus" : "goodStatus"}>{video.status}</span>
+        {renderRows.map(({ job: rowJob, video }) => (
+          <div className="historyRow" key={rowJob.id}>
+            <span className="historyName">
+              <strong>{video?.caption_original || `Video_${rowJob.video_id}.mp4`}</strong>
+              <small>Job #{rowJob.id} - {rowJob.progress_percentage}%</small>
+            </span>
+            <span>{video?.source_url.startsWith("file://") ? "Local MP4" : "Douyin"}</span>
+            <span className={rowJob.status === "failed" || rowJob.status === "canceled" ? "badStatus" : "goodStatus"}>{rowJob.status}</span>
             <span className="tableActions">
-              <button onClick={() => job && window.open(api.renderDownloadUrl(job.id), "_blank")} disabled={!activeJobReady || job?.video_id !== video.id} type="button">Download</button>
+              <button onClick={() => window.open(api.renderDownloadUrl(rowJob.id), "_blank")} disabled={rowJob.status !== "completed" || !rowJob.output_video_path} type="button">Download</button>
+              <button className="dangerAction" onClick={() => cancelRender(rowJob.id)} disabled={rowJob.status === "completed"} type="button">Cancel</button>
               <button onClick={() => loadCaption(true)} disabled={!activeVideo} type="button">Caption</button>
               <button onClick={shareCurrent} disabled={!activeVideo} type="button">Share</button>
             </span>
@@ -993,12 +1055,12 @@ function ExportView({
         {renderRows.length === 0 && <p className="emptyState inline">No matching render history.</p>}
       </div>
 
-      {job && (
+      {latestJob && (
         <div className="jobStrip">
-          <strong>Job #{job.id}: {job.status} - {job.progress_percentage}%</strong>
-          <div className="progress"><span style={{ width: `${job.progress_percentage}%` }} /></div>
-          {job.error_message && <small>{job.error_message}</small>}
-          {job.status === "completed" && <a href={api.renderDownloadUrl(job.id)}>Download MP4</a>}
+          <strong>Job #{latestJob.id}: {latestJob.status} - {latestJob.progress_percentage}%</strong>
+          <div className="progress"><span style={{ width: `${latestJob.progress_percentage}%` }} /></div>
+          {latestJob.error_message && <small>{latestJob.error_message}</small>}
+          {latestJob.status === "completed" && <a href={api.renderDownloadUrl(latestJob.id)}>Download MP4</a>}
         </div>
       )}
 
@@ -1012,7 +1074,20 @@ function ExportView({
   );
 }
 
-function RenderQueueCard({ name, progress, eta }: { name: string; progress: number; eta: string }) {
+function RenderQueueCard({
+  name,
+  progress,
+  eta,
+  job,
+  cancelRender,
+}: {
+  name: string;
+  progress: number;
+  eta: string;
+  job: RenderJob | null;
+  cancelRender: (jobId: number) => Promise<void>;
+}) {
+  const canCancel = Boolean(job && (job.status === "queued" || job.status === "rendering"));
   return (
     <article className="queueCard">
       <div className="queueIcon">R</div>
@@ -1023,7 +1098,12 @@ function RenderQueueCard({ name, progress, eta }: { name: string; progress: numb
         </div>
         <small>1080p - 60fps - H.264</small>
         <div className="progress"><span style={{ width: `${progress}%` }} /></div>
-        <div className="queueFoot"><span>{eta}</span><button type="button" disabled>Cancel</button></div>
+        <div className="queueFoot">
+          <span>{eta}</span>
+          <button type="button" disabled={!canCancel} onClick={() => job && cancelRender(job.id)}>
+            {job?.status === "cancel_requested" ? "Canceling" : "Cancel"}
+          </button>
+        </div>
       </div>
     </article>
   );

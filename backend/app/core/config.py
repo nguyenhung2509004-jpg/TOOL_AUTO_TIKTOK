@@ -20,7 +20,25 @@ class Settings(BaseSettings):
     tikhub_hot_search_path: str = "/api/v1/douyin/web/fetch_hot_search_list"
     fpt_ai_default_voice: str = "banmai"
     fpt_ai_default_speed: str = "0"
+    fpt_ai_poll_attempts: int = 12
+    fpt_ai_poll_interval_seconds: float = 2.0
+    fpt_ai_request_timeout_seconds: float = 15.0
     elevenlabs_default_voice_id: str | None = None
+    elevenlabs_voices: str = ""
+    omnivoice_model: str = "k2-fsa/OmniVoice"
+    omnivoice_device: str = "cuda:0"
+    omnivoice_dtype: str = "float16"
+    omnivoice_voices: str = ""
+    asr_provider: str = "local"
+    local_whisper_model: str = "small"
+    openai_asr_model: str = "whisper-1"
+    openai_translation_model: str = "gpt-4o-mini"
+    translation_batch_size: int = 16
+    translation_glossary: str = (
+        "Douyin=Douyin; TikTok Trung Quoc=Douyin; 宝子们=cac ban oi; "
+        "带货=ban hang/chot don tuy ngu canh"
+    )
+    tts_parallel_workers: int = 6
     douyin_cookies_path: str = "/storage/cookies/douyin_cookies.txt"
     tiktok_cookies_path: str = "./cookies.json"
 

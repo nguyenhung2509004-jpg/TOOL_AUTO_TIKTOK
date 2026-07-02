@@ -89,6 +89,12 @@ class RenderJobOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class DeleteRenderJobResponse(BaseModel):
+    job_id: int
+    deleted: bool
+    message: str
+
+
 class CaptionOut(BaseModel):
     caption: str
     hashtags: list[str]
@@ -98,3 +104,10 @@ class CleanupOut(BaseModel):
     video_id: int
     deleted_files: int
     kept_files: int
+
+
+class TTSVoiceOut(BaseModel):
+    id: str
+    label: str
+    provider: str
+    voice_id: str

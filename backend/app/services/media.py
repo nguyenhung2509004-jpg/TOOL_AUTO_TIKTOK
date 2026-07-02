@@ -53,9 +53,33 @@ def render_video(
     subtitle_path: Path,
     output_path: Path,
     original_audio_volume: float,
+    voice_volume: float,
     burn_subtitles: bool,
 ) -> Path:
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    if not voice_paths:
+        video_filter = []
+        if burn_subtitles:
+            escaped = str(subtitle_path).replace("\\", "/").replace(":", "\\:")
+            video_filter = ["-vf", f"subtitles='{escaped}'"]
+
+        command = [
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(input_video),
+            *video_filter,
+            "-c:v",
+            "libx264" if burn_subtitles else "copy",
+            "-c:a",
+            "aac",
+            "-af",
+            f"volume={original_audio_volume}",
+            str(output_path),
+        ]
+        subprocess.run(command, check=True, capture_output=True, text=True, timeout=600)
+        return output_path
+
     inputs = ["-i", str(input_video)]
     filter_parts = [f"[0:a]volume={original_audio_volume}[bg]"]
     mix_inputs = ["[bg]"]
@@ -64,7 +88,7 @@ def render_video(
         inputs.extend(["-i", str(voice_path)])
         delay_ms = int(start_time * 1000)
         label = f"aud{idx}"
-        filter_parts.append(f"[{idx}:a]adelay={delay_ms}|{delay_ms}[{label}]")
+        filter_parts.append(f"[{idx}:a]volume={voice_volume},adelay={delay_ms}|{delay_ms}[{label}]")
         mix_inputs.append(f"[{label}]")
 
     filter_parts.append(f"{''.join(mix_inputs)}amix=inputs={len(mix_inputs)}:duration=first[aout]")

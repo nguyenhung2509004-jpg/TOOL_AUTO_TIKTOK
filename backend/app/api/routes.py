@@ -13,6 +13,7 @@ from app.schemas.video import (
     CaptionOut,
     CleanupOut,
     DeleteVideoResponse,
+    DeleteRenderJobResponse,
     ImportRequest,
     ImportResponse,
     LocalScanResponse,
@@ -21,6 +22,7 @@ from app.schemas.video import (
     SegmentOut,
     SegmentUpdateRequest,
     SourceVideoOut,
+    TTSVoiceOut,
     VideoUpdateRequest,
 )
 from app.services.cleanup import cleanup_intermediate_files
@@ -30,6 +32,37 @@ from app.workers.pipeline import import_local_video_job, import_video_job, new_t
 
 router = APIRouter(prefix="/api")
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".webm"}
+
+
+def _configured_tts_voices() -> list[TTSVoiceOut]:
+    settings = get_settings()
+    voices = [
+        TTSVoiceOut(id="fpt_banmai", label="FPT - Ban Mai", provider="fpt_ai", voice_id="banmai"),
+        TTSVoiceOut(id="fpt_leminh", label="FPT - Le Minh", provider="fpt_ai", voice_id="leminh"),
+    ]
+    for index, raw_item in enumerate(settings.omnivoice_voices.split(";"), start=1):
+        item = raw_item.strip()
+        if not item:
+            continue
+        parts = [part.strip() for part in item.split("|")]
+        if len(parts) >= 4:
+            label, voice_id, ref_audio, ref_text = parts[0], parts[1], parts[2], "|".join(parts[3:])
+        elif len(parts) >= 3:
+            label, ref_audio, ref_text = parts[0], parts[1], "|".join(parts[2:])
+            voice_id = f"voice_{index}"
+        else:
+            continue
+        if not voice_id or not ref_audio or not ref_text:
+            continue
+        voices.append(
+            TTSVoiceOut(
+                id=f"omnivoice_{voice_id}",
+                label=label.strip() or f"OmniVoice {index}",
+                provider="omnivoice",
+                voice_id=voice_id,
+            )
+        )
+    return voices
 
 
 @router.post("/douyin/import", response_model=ImportResponse, status_code=202)
@@ -47,6 +80,11 @@ async def import_douyin(payload: ImportRequest, background_tasks: BackgroundTask
         task_id=task_id,
         message="Dang phan tich link va tai video tu Douyin...",
     )
+
+
+@router.get("/tts/voices", response_model=list[TTSVoiceOut])
+def list_tts_voices():
+    return _configured_tts_voices()
 
 
 @router.post("/local/scan", response_model=LocalScanResponse, status_code=202)
@@ -148,6 +186,18 @@ async def reimport_video(video_id: int, background_tasks: BackgroundTasks, db: S
     db.commit()
 
     task_id = new_task_id("job_retry")
+    is_local_video = video.platform == "local" or video.source_url.startswith("file://") or bool(video.raw_video_path)
+    if is_local_video:
+        if not video.raw_video_path:
+            raise HTTPException(status_code=400, detail="Local video has no raw_video_path to reprocess.")
+        background_tasks.add_task(import_local_video_job, video.id)
+        return ImportResponse(
+            video_id=video.id,
+            status="extracting_audio",
+            task_id=task_id,
+            message="Dang xu ly lai file video local...",
+        )
+
     background_tasks.add_task(import_video_job, video.id)
     return ImportResponse(
         video_id=video.id,
@@ -272,12 +322,32 @@ def render(video_id: int, payload: RenderRequest, background_tasks: BackgroundTa
     return job
 
 
+@router.get("/render-jobs", response_model=list[RenderJobOut])
+def list_render_jobs(video_id: int | None = None, db: Session = Depends(get_db)):
+    query = db.query(RenderJob)
+    if video_id is not None:
+        query = query.filter(RenderJob.video_id == video_id)
+    return query.order_by(RenderJob.created_at.desc()).limit(100).all()
+
+
 @router.get("/render-jobs/{job_id}", response_model=RenderJobOut)
 def get_render_job(job_id: int, db: Session = Depends(get_db)):
     job = db.get(RenderJob, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Render job not found")
     return job
+
+
+@router.post("/render-jobs/{job_id}/cancel", response_model=DeleteRenderJobResponse)
+def cancel_render_job(job_id: int, db: Session = Depends(get_db)):
+    job = db.get(RenderJob, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Render job not found")
+    if job.status == "completed":
+        raise HTTPException(status_code=400, detail="Completed render jobs cannot be canceled. Download or clean up storage instead.")
+    db.delete(job)
+    db.commit()
+    return DeleteRenderJobResponse(job_id=job_id, deleted=True, message="Render job canceled and deleted")
 
 
 @router.get("/render-jobs/{job_id}/download")

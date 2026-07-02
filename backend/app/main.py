@@ -1,4 +1,5 @@
 import uvicorn
+from datetime import datetime
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -6,7 +7,9 @@ from app.api.douyin_trends import router as douyin_trends_router
 from app.api.routes import router
 from app.core.config import get_settings
 from app.core.database import Base, engine
+from app.core.database import SessionLocal
 from app.models import video as _video_models
+from app.models.video import RenderJob
 from app.services.local_download_watcher import start_local_download_watcher, stop_local_download_watcher
 
 
@@ -27,6 +30,7 @@ def create_app() -> FastAPI:
 
     @app.on_event("startup")
     def maybe_start_local_watcher():
+        _mark_interrupted_render_jobs()
         if settings.enable_local_watcher:
             start_local_download_watcher()
 
@@ -39,6 +43,20 @@ def create_app() -> FastAPI:
         return {"status": "ok"}
 
     return app
+
+
+def _mark_interrupted_render_jobs() -> None:
+    db = SessionLocal()
+    try:
+        jobs = db.query(RenderJob).filter(RenderJob.status.in_(["queued", "rendering", "cancel_requested"])).all()
+        for job in jobs:
+            job.status = "failed"
+            job.error_message = "Render was interrupted by backend restart. Start render again."
+            job.completed_at = datetime.utcnow()
+        if jobs:
+            db.commit()
+    finally:
+        db.close()
 
 
 app = create_app()
