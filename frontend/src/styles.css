@@ -313,6 +313,10 @@ textarea {
   padding: 0 18px;
 }
 
+.hiddenFileInput {
+  display: none;
+}
+
 .avatar {
   background: linear-gradient(135deg, #1d2b24, #6e8f78);
   color: #fff;
@@ -406,6 +410,15 @@ h2 {
 .lineBtn {
   min-height: 40px;
   padding: 0 16px;
+}
+
+.lineBtn.danger {
+  border-color: #e1a091;
+  color: var(--danger);
+}
+
+.lineBtn.danger:hover {
+  background: #fff4ef;
 }
 
 .lineBtn.strong {
@@ -646,6 +659,19 @@ h2 {
 
 .videoPicker {
   margin-bottom: 16px;
+}
+
+.videoCrudBar {
+  display: flex;
+  flex-basis: 100%;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.videoCrudBar .lineBtn {
+  min-height: 34px;
+  padding: 0 12px;
 }
 
 .videoPicker button {

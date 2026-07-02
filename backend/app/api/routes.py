@@ -1,6 +1,8 @@
+import shutil
 from pathlib import Path
+from uuid import uuid4
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
@@ -10,6 +12,7 @@ from app.models.video import RenderJob, SourceVideo, VideoSegment
 from app.schemas.video import (
     CaptionOut,
     CleanupOut,
+    DeleteVideoResponse,
     ImportRequest,
     ImportResponse,
     LocalScanResponse,
@@ -18,6 +21,7 @@ from app.schemas.video import (
     SegmentOut,
     SegmentUpdateRequest,
     SourceVideoOut,
+    VideoUpdateRequest,
 )
 from app.services.cleanup import cleanup_intermediate_files
 from app.services.export import build_caption
@@ -89,6 +93,50 @@ def scan_local_inbox(background_tasks: BackgroundTasks, db: Session = Depends(ge
     return LocalScanResponse(imported=imported, skipped=skipped, watch_dir=str(settings.watch_dir))
 
 
+@router.post("/local/upload", response_model=ImportResponse, status_code=202)
+def upload_local_video(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    suffix = Path(file.filename or "").suffix.lower()
+    if suffix not in VIDEO_EXTENSIONS:
+        raise HTTPException(status_code=400, detail=f"Unsupported video file type: {suffix or 'unknown'}")
+
+    settings = get_settings()
+    upload_dir = settings.storage_dir / "uploads"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    safe_stem = Path(file.filename or "video").stem.replace(" ", "_")[:80] or "video"
+    target = upload_dir / f"{uuid4().hex[:12]}_{safe_stem}{suffix}"
+
+    try:
+        with target.open("wb") as output:
+            shutil.copyfileobj(file.file, output)
+    finally:
+        file.file.close()
+
+    raw_path = str(target.resolve())
+    video = SourceVideo(
+        platform="local",
+        source_url=f"file://{raw_path}",
+        caption_original=Path(file.filename or target.name).stem,
+        raw_video_path=raw_path,
+        status="pending",
+    )
+    db.add(video)
+    db.commit()
+    db.refresh(video)
+
+    task_id = new_task_id("job_upload")
+    background_tasks.add_task(import_local_video_job, video.id)
+    return ImportResponse(
+        video_id=video.id,
+        status="extracting_audio",
+        task_id=task_id,
+        message=f"Queued uploaded video: {file.filename or target.name}",
+    )
+
+
 @router.post("/videos/{video_id}/reimport", response_model=ImportResponse, status_code=202)
 async def reimport_video(video_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     video = db.get(SourceVideo, video_id)
@@ -120,6 +168,36 @@ def get_video(video_id: int, db: Session = Depends(get_db)):
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
     return video
+
+
+@router.put("/videos/{video_id}", response_model=SourceVideoOut)
+def update_video(video_id: int, payload: VideoUpdateRequest, db: Session = Depends(get_db)):
+    video = db.get(SourceVideo, video_id)
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+    if payload.source_url is not None:
+        source_url = payload.source_url.strip()
+        if not source_url:
+            raise HTTPException(status_code=400, detail="source_url cannot be empty")
+        video.source_url = source_url
+    if payload.caption_original is not None:
+        video.caption_original = payload.caption_original.strip() or None
+    db.commit()
+    db.refresh(video)
+    return video
+
+
+@router.delete("/videos/{video_id}", response_model=DeleteVideoResponse)
+def delete_video(video_id: int, db: Session = Depends(get_db)):
+    video = db.get(SourceVideo, video_id)
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+    segments = db.query(VideoSegment).filter(VideoSegment.video_id == video_id).all()
+    jobs = db.query(RenderJob).filter(RenderJob.video_id == video_id).all()
+    deleted_files, _kept_files = cleanup_intermediate_files(video, segments, jobs)
+    db.delete(video)
+    db.commit()
+    return DeleteVideoResponse(video_id=video_id, deleted_files=deleted_files, message="Video deleted")
 
 
 @router.get("/videos/{video_id}/raw")

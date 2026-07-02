@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { api, DouyinTrend, Niche, RenderJob, Segment, SourceVideo } from "./lib/api";
 import "./styles.css";
@@ -71,6 +71,21 @@ function App() {
     }
   }
 
+  async function uploadLocalVideo(file: File) {
+    setBusy(true);
+    setError(null);
+    try {
+      const response = await api.uploadLocal(file);
+      await refreshVideos(response.video_id);
+      setTab("studio");
+      showNotice(response.message);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Upload local video failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function scanLocalInbox() {
     setBusy(true);
     setError(null);
@@ -100,6 +115,44 @@ function App() {
       showNotice("Segments saved.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Save failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function updateActiveVideo(payload: { source_url?: string; caption_original?: string }) {
+    if (!activeVideo) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const updated = await api.updateVideo(activeVideo.id, payload);
+      setActiveVideo(updated);
+      setVideos((items) => items.map((item) => (item.id === updated.id ? updated : item)));
+      showNotice("Video updated.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Update video failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deleteActiveVideo() {
+    if (!activeVideo) return;
+    const ok = window.confirm(`Delete Video #${activeVideo.id}? This also removes stored segments and render job records.`);
+    if (!ok) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const deletedId = activeVideo.id;
+      const response = await api.deleteVideo(deletedId);
+      const remaining = videos.filter((video) => video.id !== deletedId);
+      setVideos(remaining);
+      setActiveVideo(remaining[0] ?? null);
+      setSegments([]);
+      setCaption("");
+      showNotice(`${response.message}. Deleted files: ${response.deleted_files}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Delete video failed");
     } finally {
       setBusy(false);
     }
@@ -291,7 +344,15 @@ function App() {
         addFolder={addFolder}
       />
       <main className="mainArea">
-        <Topbar tab={tab} setTab={setTab} url={url} setUrl={setUrl} busy={busy} importVideo={importVideo} />
+        <Topbar
+          tab={tab}
+          setTab={setTab}
+          url={url}
+          setUrl={setUrl}
+          busy={busy}
+          importVideo={importVideo}
+          uploadLocalVideo={uploadLocalVideo}
+        />
         {(error || trendError || notice) && <div className={notice ? "alert success" : "alert"}>{notice || error || trendError}</div>}
 
         {tab === "dashboard" && (
@@ -319,6 +380,9 @@ function App() {
             warningCount={warningCount}
             busy={busy}
             saveSegments={saveSegments}
+            refreshVideos={() => refreshVideos(activeVideo?.id)}
+            updateActiveVideo={updateActiveVideo}
+            deleteActiveVideo={deleteActiveVideo}
             retryImport={retryImport}
             startRender={startRender}
             volume={volume}
@@ -464,6 +528,7 @@ function Topbar({
   setUrl,
   busy,
   importVideo,
+  uploadLocalVideo,
 }: {
   tab: AppTab;
   setTab: (tab: AppTab) => void;
@@ -471,7 +536,25 @@ function Topbar({
   setUrl: (value: string) => void;
   busy: boolean;
   importVideo: (event?: React.FormEvent) => Promise<void>;
+  uploadLocalVideo: (file: File) => Promise<void>;
 }) {
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  function handleImportClick() {
+    if (url.trim()) {
+      importVideo();
+      return;
+    }
+    fileInputRef.current?.click();
+  }
+
+  function handleFileChange(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    uploadLocalVideo(file);
+  }
+
   return (
     <header className="topNav">
       <nav className="sectionTabs">
@@ -486,7 +569,22 @@ function Topbar({
       <div className="topActions">
         <button className="iconBtn" type="button" aria-label="Notifications">N</button>
         <button className="iconBtn" type="button" aria-label="Settings">S</button>
-        <button className="importBtn" disabled={busy || !url.trim()} onClick={() => importVideo()} type="button">+ Import</button>
+        <input
+          ref={fileInputRef}
+          className="hiddenFileInput"
+          accept="video/mp4,video/quicktime,video/x-matroska,video/webm"
+          onChange={handleFileChange}
+          type="file"
+        />
+        <button
+          className="importBtn"
+          disabled={busy}
+          onClick={handleImportClick}
+          title={url.trim() ? "Import Douyin URL" : "Choose a local video file"}
+          type="button"
+        >
+          + Import
+        </button>
         <div className="avatar" aria-label="Current user">HS</div>
       </div>
     </header>
@@ -632,6 +730,9 @@ function StudioView({
   warningCount,
   busy,
   saveSegments,
+  refreshVideos,
+  updateActiveVideo,
+  deleteActiveVideo,
   retryImport,
   startRender,
   volume,
@@ -656,6 +757,9 @@ function StudioView({
   warningCount: number;
   busy: boolean;
   saveSegments: () => Promise<void>;
+  refreshVideos: () => Promise<SourceVideo | null>;
+  updateActiveVideo: (payload: { source_url?: string; caption_original?: string }) => Promise<void>;
+  deleteActiveVideo: () => Promise<void>;
   retryImport: () => Promise<void>;
   startRender: () => Promise<void>;
   volume: number;
@@ -677,6 +781,20 @@ function StudioView({
     showNotice("Optimized text applied to Vietnamese dub column.");
   }
 
+  function renameVideo() {
+    if (!activeVideo) return;
+    const nextName = window.prompt("Video title / library name", activeVideo.caption_original || `Video ${activeVideo.id}`);
+    if (nextName === null) return;
+    updateActiveVideo({ caption_original: nextName });
+  }
+
+  function editSourceUrl() {
+    if (!activeVideo) return;
+    const nextUrl = window.prompt("Source URL", activeVideo.source_url);
+    if (nextUrl === null) return;
+    updateActiveVideo({ source_url: nextUrl });
+  }
+
   return (
     <section className="studioLayout">
       <div className="pagePanel studioTablePanel">
@@ -694,6 +812,12 @@ function StudioView({
         </div>
 
         <div className="videoPicker">
+          <div className="videoCrudBar">
+            <button className="lineBtn" onClick={() => refreshVideos()} disabled={busy} type="button">Refresh list</button>
+            <button className="lineBtn" onClick={renameVideo} disabled={!activeVideo || busy} type="button">Rename</button>
+            <button className="lineBtn" onClick={editSourceUrl} disabled={!activeVideo || busy} type="button">Edit source</button>
+            <button className="lineBtn danger" onClick={deleteActiveVideo} disabled={!activeVideo || busy} type="button">Delete</button>
+          </div>
           {videos.map((video) => (
             <button className={activeVideo?.id === video.id ? "active" : ""} key={video.id} onClick={() => setActiveVideo(video)} type="button">
               Video #{video.id}<small>{video.status}</small>

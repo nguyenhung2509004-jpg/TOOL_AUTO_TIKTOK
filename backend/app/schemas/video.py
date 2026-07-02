@@ -30,6 +30,17 @@ class SourceVideoOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class VideoUpdateRequest(BaseModel):
+    source_url: str | None = None
+    caption_original: str | None = None
+
+
+class DeleteVideoResponse(BaseModel):
+    video_id: int
+    deleted_files: int
+    message: str
+
+
 class SegmentOut(BaseModel):
     id: int
     start_time: float

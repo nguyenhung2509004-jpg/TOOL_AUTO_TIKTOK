@@ -67,8 +67,9 @@ export type DouyinTrend = {
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8000";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const isFormData = init?.body instanceof FormData;
   const response = await fetch(`${API_BASE}${path}`, {
-    headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
+    headers: { ...(isFormData ? {} : { "Content-Type": "application/json" }), ...(init?.headers ?? {}) },
     ...init,
   });
   if (!response.ok) {
@@ -90,6 +91,14 @@ export const api = {
       method: "POST",
     });
   },
+  uploadLocal(file: File) {
+    const body = new FormData();
+    body.append("file", file);
+    return request<{ video_id: number; status: string; task_id: string; message: string }>("/api/local/upload", {
+      method: "POST",
+      body,
+    });
+  },
   reimport(videoId: number) {
     return request<{ video_id: number; status: string; task_id: string; message: string }>(`/api/videos/${videoId}/reimport`, {
       method: "POST",
@@ -100,6 +109,17 @@ export const api = {
   },
   video(id: number) {
     return request<SourceVideo>(`/api/videos/${id}`);
+  },
+  updateVideo(videoId: number, payload: { source_url?: string; caption_original?: string }) {
+    return request<SourceVideo>(`/api/videos/${videoId}`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    });
+  },
+  deleteVideo(videoId: number) {
+    return request<{ video_id: number; deleted_files: number; message: string }>(`/api/videos/${videoId}`, {
+      method: "DELETE",
+    });
   },
   segments(videoId: number) {
     return request<Segment[]>(`/api/videos/${videoId}/segments`);
