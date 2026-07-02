@@ -27,6 +27,7 @@ class TranslationService:
         video_context = self._build_video_context(payload)
         translated: dict[int, tuple[str, str]] = {}
         batch_size = max(settings.translation_batch_size, 1)
+
         for start in range(0, len(payload), batch_size):
             batch = payload[start:start + batch_size]
             previous_items = payload[max(0, start - 3):start]
@@ -40,6 +41,7 @@ class TranslationService:
                     glossary=settings.translation_glossary,
                 )
             )
+
         return [
             (segment.id, translated.get(segment.id, ("", ""))[0], translated.get(segment.id, ("", ""))[1])
             for segment in segments
@@ -52,6 +54,7 @@ class TranslationService:
                 "start": segment.start_time,
                 "end": segment.end_time,
                 "duration": round(max(segment.end_time - segment.start_time, 0), 2),
+                "max_vi_words": max(int((segment.end_time - segment.start_time) * self.WORDS_PER_SECOND), 1),
                 "text_cn": segment.text_cn,
             }
             for segment in segments
@@ -76,7 +79,7 @@ class TranslationService:
                     {
                         "role": "system",
                         "content": (
-                            "Bạn là biên tập viên nội dung Douyin. Hãy đọc transcript và tạo ngữ cảnh ngắn "
+                            "Bạn là biên tập viên nội dung Douyin. Đọc transcript và tạo ngữ cảnh ngắn "
                             "để người dịch tiếng Việt hiểu đúng mạch video. Không dịch từng segment ở bước này."
                         ),
                     },
@@ -84,7 +87,7 @@ class TranslationService:
                         "role": "user",
                         "content": (
                             "Tạo video_context gồm: chủ đề, mục đích video, người nói/đối tượng, giọng điệu, "
-                            "các thuật ngữ cần thống nhất, và mạch ý chính theo thứ tự.\n\nTranscript:\n"
+                            "thuật ngữ cần thống nhất, và mạch ý chính theo thứ tự.\n\nTranscript:\n"
                             f"{transcript}"
                         ),
                     },
@@ -119,7 +122,7 @@ class TranslationService:
                     {
                         "role": "system",
                         "content": (
-                            "Bạn là biên tập viên lồng tiếng Việt cho video ngắn Douyin. "
+                            "Bạn là biên tập viên lồng tiếng Việt cho video ngắn Douyin.\n"
                             "Không dịch máy từng chữ. Hãy dịch theo ngữ cảnh toàn video.\n\n"
                             "Yêu cầu:\n"
                             "- Giữ đúng ý gốc.\n"
@@ -129,6 +132,8 @@ class TranslationService:
                             "- Nếu tiếng Trung dùng ẩn ý, hãy diễn đạt rõ bằng tiếng Việt.\n"
                             "- Không thêm thông tin sai.\n"
                             "- Độ dài mỗi segment phải phù hợp thời lượng nói.\n\n"
+                            "- Ưu tiên câu ngắn, có dấu chấm/phẩy để ngắt hơi tự nhiên.\n"
+                            "- Không vượt quá max_vi_words của từng segment, trừ khi bắt buộc để giữ nghĩa.\n\n"
                             "Trả về JSON duy nhất có key segments, là array object: "
                             '{"id": number, "text_vi": string, "text_vi_optimized": string}.'
                         ),
@@ -143,9 +148,10 @@ class TranslationService:
                                 "segments_to_translate": batch,
                                 "next_context_segments": next_items,
                                 "instruction": (
-                                    "Dịch segments_to_translate sang tiếng Việt. text_vi giữ sát nghĩa, "
-                                    "text_vi_optimized là bản lồng tiếng tự nhiên hơn nhưng không sai ý. "
-                                    "Dùng previous/next chỉ để hiểu mạch, không trả về chúng."
+                                    "Dịch segments_to_translate sang tiếng Việt. text_vi giữ sát nghĩa. "
+                                    "text_vi_optimized là bản lồng tiếng tự nhiên hơn, nối mạch hơn, "
+                                    "có dấu câu/ngắt hơi hợp lý, ngắn đủ để đọc khớp thời lượng. "
+                                    "Dùng previous/next chỉ để hiểu ngữ cảnh, không trả về chúng."
                                 ),
                             },
                             ensure_ascii=False,
@@ -157,6 +163,7 @@ class TranslationService:
         )
         if response.status_code >= 400:
             raise RuntimeError(f"OpenAI translation failed: {response.text[:500]}")
+
         content = response.json()["choices"][0]["message"]["content"]
         data = self._loads_json_object(content)
         return {

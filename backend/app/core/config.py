@@ -22,7 +22,14 @@ class Settings(BaseSettings):
     fpt_ai_default_speed: str = "0"
     fpt_ai_poll_attempts: int = 12
     fpt_ai_poll_interval_seconds: float = 2.0
-    fpt_ai_request_timeout_seconds: float = 15.0
+    fpt_ai_request_timeout_seconds: float = 60.0
+    fpt_ai_rate_limit_retries: int = 20
+    fpt_ai_rate_limit_delay_seconds: float = 10.0
+    fpt_ai_timeout_retries: int = 5
+    fpt_ai_timeout_delay_seconds: float = 5.0
+    voice_segment_pause_seconds: float = 0.03
+    voice_fit_mode: str = "sync"
+    voice_max_tempo: float = 1.18
     elevenlabs_default_voice_id: str | None = None
     elevenlabs_voices: str = ""
     omnivoice_model: str = "k2-fsa/OmniVoice"

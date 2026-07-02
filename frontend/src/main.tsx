@@ -229,7 +229,7 @@ function App() {
       setJobs((items) => items.filter((item) => item.id !== response.job_id));
       showNotice(response.message);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Cancel render failed");
+      setError(err instanceof Error ? err.message : "Delete render job failed");
     }
   }
 
@@ -832,13 +832,15 @@ function StudioView({
     updateActiveVideo({ source_url: nextUrl });
   }
 
+  const activeVideoName = activeVideo ? displayVideoName(activeVideo) : "No video selected";
+
   return (
     <section className="studioLayout">
       <div className="pagePanel studioTablePanel">
         <div className="studioHeader">
           <div>
             <h1>Translate Studio</h1>
-            <span className="fileTag">{activeVideo ? `VIDEO_${activeVideo.id}.mp4` : "No video selected"}</span>
+            <span className="fileTag">{activeVideo ? `${activeVideoName}.mp4` : activeVideoName}</span>
             <span className="draftTag">{activeVideo?.status ?? "Draft"}</span>
           </div>
           <div className="editorTools">
@@ -857,7 +859,7 @@ function StudioView({
           </div>
           {videos.map((video) => (
             <button className={activeVideo?.id === video.id ? "active" : ""} key={video.id} onClick={() => setActiveVideo(video)} type="button">
-              Video #{video.id}<small>{video.status}</small>
+              {displayVideoName(video)}<small>{video.status}</small>
             </button>
           ))}
           {videos.length === 0 && <span className="emptyInline">No videos in this library folder.</span>}
@@ -1046,7 +1048,7 @@ function ExportView({
             <span className={rowJob.status === "failed" || rowJob.status === "canceled" ? "badStatus" : "goodStatus"}>{rowJob.status}</span>
             <span className="tableActions">
               <button onClick={() => window.open(api.renderDownloadUrl(rowJob.id), "_blank")} disabled={rowJob.status !== "completed" || !rowJob.output_video_path} type="button">Download</button>
-              <button className="dangerAction" onClick={() => cancelRender(rowJob.id)} disabled={rowJob.status === "completed"} type="button">Cancel</button>
+              <button className="dangerAction" onClick={() => cancelRender(rowJob.id)} type="button">Delete</button>
               <button onClick={() => loadCaption(true)} disabled={!activeVideo} type="button">Caption</button>
               <button onClick={shareCurrent} disabled={!activeVideo} type="button">Share</button>
             </span>
@@ -1111,6 +1113,11 @@ function RenderQueueCard({
 
 function formatNumber(value: number) {
   return new Intl.NumberFormat("en", { notation: "compact" }).format(value);
+}
+
+function displayVideoName(video: SourceVideo) {
+  const name = video.caption_original?.trim();
+  return name || `Video #${video.id}`;
 }
 
 function formatTime(value: number) {

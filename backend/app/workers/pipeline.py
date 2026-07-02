@@ -173,10 +173,13 @@ def render_job(job_id: int, request: RenderRequest) -> None:
         segments = _segments(db, job.video_id)
         if not segments:
             raise RuntimeError("No real transcript segments found. Run ASR/import successfully before rendering.")
-        voice_paths: list[tuple[Path, float]] = []
+        voice_paths: list[tuple[Path, float, float, float]] = []
         tts_errors: list[str] = []
         total_segments = max(len(segments), 1)
-        workers = min(max(settings.tts_parallel_workers, 1), total_segments)
+        if request.tts_provider == "fpt_ai":
+            workers = 1
+        else:
+            workers = min(max(settings.tts_parallel_workers, 1), total_segments)
         executor = ThreadPoolExecutor(max_workers=workers)
         render_canceled = False
         try:
@@ -201,20 +204,13 @@ def render_job(job_id: int, request: RenderRequest) -> None:
                 try:
                     voice_path, voice_duration, speed_ratio = future.result()
                 except Exception as exc:
-                    tts_errors.append(f"segment {segment_id}: {exc}")
-                    segment.voice_segment_path = None
-                    segment.voice_duration = None
-                    segment.speed_ratio = 1.0
-                    job.error_message = (
-                        f"TTS skipped {len(tts_errors)} segment(s); rendering will continue. "
-                        f"First error: {tts_errors[0][:500]}"
-                    )
+                    raise RuntimeError(f"segment {segment_id}: {exc}") from exc
                 else:
                     segment.voice_segment_path = str(voice_path) if voice_path else None
                     segment.voice_duration = voice_duration
                     segment.speed_ratio = speed_ratio
                     if voice_path:
-                        voice_paths.append((voice_path, segment.start_time))
+                        voice_paths.append((voice_path, segment.start_time, segment.end_time, voice_duration))
                 job.progress_percentage = min(44, 10 + int(index / total_segments * 34))
                 db.commit()
         except RenderCanceled:
@@ -290,6 +286,9 @@ def _synthesize_segment_voice(
     return tts.synthesize(segment_id, text, target_duration)
 
 
+def _is_rate_limit_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return "rate limit" in message or "too many request" in message or "too many requests" in message
 def _raise_if_render_canceled(db: Session, job_id: int) -> None:
     job = db.get(RenderJob, job_id)
     if not job:

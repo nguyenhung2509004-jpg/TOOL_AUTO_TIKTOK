@@ -70,8 +70,8 @@ class SubtitleStyle(BaseModel):
 
 
 class RenderRequest(BaseModel):
-    tts_provider: str = "local"
-    voice_id: str = "vi_default"
+    tts_provider: str = "fpt_ai"
+    voice_id: str = "banmai"
     original_audio_volume: float = Field(default=0.15, ge=0, le=1)
     voice_volume: float = Field(default=1.0, ge=0, le=2)
     burn_subtitles: bool = True

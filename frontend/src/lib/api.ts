@@ -154,8 +154,8 @@ export const api = {
     return request<RenderJob>(`/api/videos/${videoId}/render`, {
       method: "POST",
       body: JSON.stringify({
-        tts_provider: options?.ttsProvider ?? "local",
-        voice_id: options?.voiceId ?? "vi_default",
+        tts_provider: options?.ttsProvider ?? "fpt_ai",
+        voice_id: options?.voiceId ?? "banmai",
         original_audio_volume: originalAudioVolume,
         voice_volume: options?.voiceVolume ?? 1,
         burn_subtitles: burnSubtitles,

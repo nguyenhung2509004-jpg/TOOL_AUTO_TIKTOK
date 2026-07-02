@@ -3,21 +3,15 @@ tool_tiktok.db
 cookies.txt
 cookies.json
 *.db
-
 __pycache__/
 *.py[cod]
-
 *.mp4
 *.mov
 *.mkv
-*.mp3
-*.wav
-*.srt
 
 frontend/node_modules/
 frontend/dist/
 
-# Generated storage files
 storage/raw/*
 storage/audio/*
 storage/segments/*
@@ -26,15 +20,7 @@ storage/renders/*
 storage/cookies/*
 storage/backups/*
 storage/inbox/*
-
-# AI model/cache files
 storage/models/*
-storage/models/
-models/
-.cache/
-huggingface/
-.huggingface/
-
 !storage/raw/.gitkeep
 !storage/audio/.gitkeep
 !storage/segments/.gitkeep
@@ -42,3 +28,4 @@ huggingface/
 !storage/renders/.gitkeep
 !storage/cookies/.gitkeep
 !storage/inbox/.gitkeep
+!storage/models/.gitkeep

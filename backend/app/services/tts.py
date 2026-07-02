@@ -32,16 +32,7 @@ class TTSService:
         if not self.settings.fpt_ai_api_key:
             raise RuntimeError("FPT_AI_API_KEY is not configured for automatic Vietnamese TTS.")
         voice = self.voice_id or self.settings.fpt_ai_default_voice
-        response = httpx.post(
-            "https://api.fpt.ai/hmi/tts/v5",
-            headers={
-                "api-key": self.settings.fpt_ai_api_key,
-                "voice": voice,
-                "speed": self.settings.fpt_ai_default_speed,
-            },
-            content=text.encode("utf-8"),
-            timeout=self.settings.fpt_ai_request_timeout_seconds,
-        )
+        response = self._post_fpt_with_rate_limit_retry(voice, text)
         if response.status_code >= 400:
             raise RuntimeError(f"FPT AI TTS failed: {response.text[:500]}")
         data = response.json()
@@ -53,6 +44,61 @@ class TTSService:
         duration = ffprobe_duration(output_path) or target_duration
         speed_ratio = duration / target_duration if target_duration > 0 else 1.0
         return output_path, duration, speed_ratio
+
+    def _post_fpt_with_rate_limit_retry(self, voice: str, text: str) -> httpx.Response:
+        rate_retries = max(int(self.settings.fpt_ai_rate_limit_retries), 0)
+        timeout_retries = max(int(self.settings.fpt_ai_timeout_retries), 0)
+        rate_delay = max(float(self.settings.fpt_ai_rate_limit_delay_seconds), 1)
+        timeout_delay = max(float(self.settings.fpt_ai_timeout_delay_seconds), 1)
+        last_response: httpx.Response | None = None
+        last_error = ""
+        attempt = 0
+        max_attempts = rate_retries + timeout_retries + 1
+        rate_retry_count = 0
+        timeout_retry_count = 0
+        while attempt < max_attempts:
+            if attempt:
+                time.sleep(rate_delay if last_response is not None else timeout_delay)
+            attempt += 1
+            last_response = None
+            try:
+                response = httpx.post(
+                    "https://api.fpt.ai/hmi/tts/v5",
+                    headers={
+                        "api-key": self.settings.fpt_ai_api_key,
+                        "voice": voice,
+                        "speed": self.settings.fpt_ai_default_speed,
+                    },
+                    content=text.encode("utf-8"),
+                    timeout=self.settings.fpt_ai_request_timeout_seconds,
+                )
+            except (httpx.TimeoutException, httpx.TransportError) as exc:
+                last_error = str(exc) or exc.__class__.__name__
+                timeout_retry_count += 1
+                if timeout_retry_count <= timeout_retries:
+                    continue
+                raise RuntimeError(
+                    f"FPT AI TTS request timed out after {timeout_retry_count} retries. Last error: {last_error}"
+                ) from exc
+            if not self._is_fpt_rate_limited(response):
+                return response
+            last_response = response
+            rate_retry_count += 1
+            if rate_retry_count > rate_retries:
+                break
+        if last_response is not None:
+            raise RuntimeError(
+                "FPT AI TTS rate limit still active after "
+                f"{rate_retries} retries. Try again later or increase FPT_AI_RATE_LIMIT_DELAY_SECONDS/RETRIES. "
+                f"Last response: {last_response.text[:500]}"
+            )
+        raise RuntimeError(f"FPT AI TTS retry failed before receiving a response. Last error: {last_error}")
+
+    def _is_fpt_rate_limited(self, response: httpx.Response) -> bool:
+        if response.status_code == 429:
+            return True
+        body = response.text.lower()
+        return "rate limit" in body or "too many request" in body or "too many requests" in body
 
     def _synthesize_omnivoice(self, segment_id: int, text: str, target_duration: float) -> tuple[Path | None, float, float]:
         voice = self._omnivoice_voice_config()
@@ -140,7 +186,11 @@ class TTSService:
         for attempt in range(attempts):
             if attempt:
                 time.sleep(interval)
-            response = httpx.get(url, headers=headers, follow_redirects=True, timeout=timeout)
+            try:
+                response = httpx.get(url, headers=headers, follow_redirects=True, timeout=timeout)
+            except (httpx.TimeoutException, httpx.TransportError) as exc:
+                last_error = str(exc) or exc.__class__.__name__
+                continue
             content_type = response.headers.get("content-type", "")
             content = response.content
             if response.status_code == 200 and (

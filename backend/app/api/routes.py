@@ -343,11 +343,9 @@ def cancel_render_job(job_id: int, db: Session = Depends(get_db)):
     job = db.get(RenderJob, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Render job not found")
-    if job.status == "completed":
-        raise HTTPException(status_code=400, detail="Completed render jobs cannot be canceled. Download or clean up storage instead.")
     db.delete(job)
     db.commit()
-    return DeleteRenderJobResponse(job_id=job_id, deleted=True, message="Render job canceled and deleted")
+    return DeleteRenderJobResponse(job_id=job_id, deleted=True, message="Render job deleted")
 
 
 @router.get("/render-jobs/{job_id}/download")
